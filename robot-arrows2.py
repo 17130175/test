@@ -86,15 +86,15 @@ def main(stdscr):
 			actual_speed3 = 0
 			actual_speed4 = max_speed 
 		elif Key == curses.KEY_LEFT:
-			actual_speed1 = 0
-			actual_speed2 = max_speed 
-			actual_speed3 = 0
-			actual_speed4 = max_speed 
-		elif Key == curses.KEY_RIGHT:
 			actual_speed1 = max_speed
 			actual_speed2 = 0
-			actual_speed3 = max_speed 
+			actual_speed3 = max_speed
 			actual_speed4 = 0
+		elif Key == curses.KEY_RIGHT:
+			actual_speed1 = 0
+			actual_speed2 = max_speed
+			actual_speed3 = 0
+			actual_speed4 = max_speed
 		elif Key == ord('1'):
 			max_speed = 0.25
 		elif Key == ord('2'):

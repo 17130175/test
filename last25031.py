@@ -1,35 +1,34 @@
 #! /usr/bin/python3
 
 from evdev import InputDevice, categorize, ecodes
-from flask import Flask, Response
-import cv2
-import numpy as np
 import threading
 import RPi.GPIO as GPIO
 import sys,time,random,math
+from flask import Flask, Response
+import numpy as np
+import cv2
+
+TRIG = 16
+ECHO = 18
+w=0
+start_time = 0
 
 GPIO.setmode(GPIO.BOARD)
 GPIO.setup((11, 13, 15, 19), GPIO.OUT, initial=GPIO.LOW)
-trig = 16
-echo = 18
-GPIO.setup(trig, GPIO.OUT)
-GPIO.setup(echo, GPIO.IN)
-GPIO.output(trig, False)
-i = 0
+GPIO.setup(TRIG,GPIO.OUT)
+GPIO.setup(ECHO,GPIO.IN)
+
 motor_pwm_period = 0.05
-max_speed = 0.75
 actual_speed1 = 0
 actual_speed2 = 0
 actual_speed3 = 0
 actual_speed4 = 0
-time.sleep(2)
-#top, center, bottom = [], [], []
-pulse_start, pulse_end = 0,0
-x1, x2, x3 = 0, 0, 0
-y1, y2, y3 = 0, 0, 0
-ang = 0
 
+GPIO.output(TRIG, False)
+print("Calibrating.....")
 app = Flask(__name__)
+time.sleep(2)
+print("Start")
 
 def __gstreamer_pipeline(
         camera_id,
@@ -59,77 +58,73 @@ def __gstreamer_pipeline(
                     display_height,
             )
     )
+
 def generate_frames():
-    global top, center, bottom
+    global actual_speed1, actual_speed4
     camera = cv2.VideoCapture(__gstreamer_pipeline(camera_id=0, flip_method=2), cv2.CAP_GSTREAMER)
+    x,y = 0, 0
+    blue = np.uint8([[[255, 0, 0]]])
+    hsvBlue = cv2.cvtColor(blue, cv2.COLOR_BGR2HSV)
+    L_limit = np.array([100, 100, 100]) #hsvBlue[0][0][0] - 10, 100, 100
+    U_limit = np.array([140, 255, 255]) #hsvBlue[0][0][0] + 10, 255, 255
     while True:
         success, frame = camera.read()
-        if not success:
-           break
+        height, width = frame.shape[:2]
+        edge = 40
+        dst = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        blur = cv2.GaussianBlur(dst, (5, 5), 0)
+        b_mask=cv2.inRange(blur, L_limit, U_limit)
+        moments = cv2.moments(b_mask, 1)
+        dM01 = moments['m01']
+        dM10 = moments['m10']
+        dArea = moments['m00']
+        if dArea > 150:
+            x = int(dM10/dArea)
+            y = int(dM01/dArea)
+            cv2.circle(frame, (x,y), 10, (0,0,255), -1)
+            cv2.circle(frame, (x,y//2), 10, (0,0,255), -1)
+        if (x>(width/2+edge)) and x!=0:
+            cv2.rectangle(frame, (0,0), (x-50,height), (0,255,0), -1)
+            actual_speed1 = 1
+            actual_speed3 = 1
+            actual_speed2 = 0
+            actual_speed4 = 0
+        elif (x<(width/2-edge)) and x!=0:
+            cv2.rectangle(frame, (x+50,0), (width,height), (0,255,0), -1)
+            actual_speed4 = 1
+            actual_speed2 = 1
+            actual_speed1 = 0
+            actual_speed3 = 0
         else:
-            frame1 = frame
-            hls = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
-            #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            height, width, channel = hls.shape
-            top = hls[height//100*20:height//100*50]
-            center = hls[height//100*50:height//100*70]
-            bottom = hls[height//100*60:]
-            #follow_line(top, center, bottom)
-            frame = cv2.inRange(hls, np.array([60,150,40]),np.array([150,255,200]))
-            edge = cv2.Canny(frame, 30, 200)
-            contours, hierachy = cv2.findContours(edge, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-            cv2.drawContours(frame, contours, -1, (0, 255, 0), 3)
-            #frame = cv2.bitwise_or(frame1, frame1, mask=frame)
-            frame = frame1
+
+            if w == 0:
+                actual_speed1 = 1
+                actual_speed4 = 1
+            else:
+                actual_speed1 = 0
+                actual_speed4 = 0
+            actual_speed2 = 0
+            actual_speed3 = 0
+        if not success:
+            break
+        else:
             ret, buffer = cv2.imencode('.jpg', frame)
             frame = buffer.tobytes()
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-def follow_line(top, center, bottom):
-    global x1, x2, x3, y1, y2, y3, ang
-    
-    x1, y1 = white_point(top, x1, y1)
-    x2, y2 = white_point(center, x2, y2)
-    x3, y3 = white_point(bottom, x3, y3)
-    ang = angle(x1, x2, x3, y1, y2, y3)
-    line_control(ang)
-
-def white_point(frame, x, y):
-    lower_white = np.array([60, 150, 40])
-    upper_white = np.array([150, 255, 200])
-    mask = cv2.inRange(frame, lower_white, upper_white)
-    
-    moments = cv2.moments(mask, 1)
-    dm01 = moments['m01']
-    dm10 = moments['m10']
-    darea = moments['m00']
-    if darea > 150:
-        x = int(dm01/darea)
-        y = int(dm10/darea)
-    return x, y
-
 @app.route('/video')
 def video():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-def angle(x1, x2, x3, y1, y2, y3):
-    if x1 == x2 or x2 == x3:
-        deg = 0
-        return deg
-
-    k1 = (y2 - y1)/(x2 - x1)
-    k2 = (y3 - y2)/(x3 - x2)
-    if 1 + k1*k2 == 0:
-        return 0
-    deg = np.degrees(np.arctan((k2 - k1) / (1 + k1*k2)))
-    time.sleep(0.5)
-    return deg
+def video_enable():
+    app.run(host='0.0.0.0', port=5000)
 
 def control_pwm1():
-    global actual_speed1, trig, echo
-    sensor_control(trig, echo)
+    global actual_speed1, w
     while control_pwm_enabled:
+        if w == 1:
+            actual_speed1 = 0
         if actual_speed1 > 0:
             GPIO.output(15, GPIO.HIGH)
             time.sleep(max(motor_pwm_period * actual_speed1,0) )
@@ -164,8 +159,10 @@ def control_pwm3():
             time.sleep(motor_pwm_period)
 
 def control_pwm4():
-    global actual_speed4
+    global actual_speed4, w
     while control_pwm_enabled:
+        if w == 1:
+            actual_speed4 = 0
         if actual_speed4 > 0:
             GPIO.output(13, GPIO.HIGH)
             time.sleep(max(motor_pwm_period * actual_speed4,0) )
@@ -175,94 +172,82 @@ def control_pwm4():
         else:
             time.sleep(motor_pwm_period)
 
-def camera_control():
-    app.run(host='0.0.0.0', port=4444)
+def hc_sensor():
+    global w, start_time
+    while True:
+        GPIO.output(TRIG, True)
+        time.sleep(0.0000001)
+        GPIO.output(TRIG, False)
 
-def line_control(ang):
-    global actual_speed1, actual_speed2, actual_speed3, actual_speed4
-    print(ang)
-    if ang > 15:
-        actual_speed1 = 0
-        actual_speed2 = 0
-        actual_speed3 = max(0, -0.4)
-        actual_speed4 = max(0, 0.4)
-    elif ang < 15:
-        normalized = (ang - 180) * 180
-        actual_speed1 = max(0, 0.4)
-        actual_speed2 = max(0, -0.4)
-        actual_speed3 = 0
-        actual_speed4 = 0
-    else:
-        actual_speed1 = 0
-        actual_speed2 = 0
-        actual_speed3 = 0
-        actual_speed4 = 0
+        while GPIO.input(ECHO)==0:
+            pulse_start = time.time()
 
-def sensor_control(TRIG,ECHO):
-    global i, pulse_start, pulse_end
-    GPIO.output(TRIG, True)
-    time.sleep(0.00001)
-    GPIO.output(TRIG, False)
-    while GPIO.input(ECHO)==0:
-        pulse_start = time.time()
+        while GPIO.input(ECHO)==1:
+            pulse_end = time.time()
 
-    while GPIO.input(ECHO)==1:
-        pulse_end = time.time()
+        pulse_duration = pulse_end - pulse_start
+        distance = round(pulse_duration * 17150 + 1.15, 2)
+        now_time = time.time()
 
-    pulse_duration = pulse_end - pulse_start
+        if distance<=20 and distance>=5:
+            w=1
 
-    distance = pulse_duration * 17150
+        if distance>20 and w==1 or now_time-start_time > 5:
+            w=0
 
-    distance = round(distance+1.15, 2)
-  
-    if distance<=20 and distance>=5:
-        print ("distance:",distance,"cm")
-        i=1
-    if distance>20 and i==1:
-        print ("place the object....")
-        i=0
-    time.sleep(2)
+        if w==1:
+            start_time = time.time()
 
+control_video = threading.Thread(target=video_enable, args=())
+control_sensor = threading.Thread(target=hc_sensor, args=())
 control_pwm_thread1 = threading.Thread(target=control_pwm1, args=())
 control_pwm_thread2 = threading.Thread(target=control_pwm2, args=())
 control_pwm_thread3 = threading.Thread(target=control_pwm3, args=())
 control_pwm_thread4 = threading.Thread(target=control_pwm4, args=())
-control_camera = threading.Thread(target=camera_control, args=())
-#control_line = threading.Thread(target=line_control, args=(ang))
-control_sensor = threading.Thread(target=sensor_control, args=(trig, echo))
 
 control_pwm_enabled = True
-#control_pwm_enabled = False
+
 if control_pwm_enabled:
     control_pwm_thread1.start()
     control_pwm_thread2.start()
     control_pwm_thread3.start()
     control_pwm_thread4.start()
-    control_camera.start()
-    #control_line.start()
     control_sensor.start()
-    
+    control_video.start()
+
 gamepad = InputDevice('/dev/input/event2')
-#evdev takes care of polling the controller in a loop
+
 for event in gamepad.read_loop():
-    #print(categorize(event))
     if event.type == ecodes.EV_KEY:
-        if event.code == ecodes.BTN_SELECT:
+        if event.code == ecodes.BTN_START:
             if event.value == 0:
                 break
 
     if event.type == ecodes.EV_ABS:
-        if event.code == ecodes.ABS_RZ:
-            normalized = (event.value - 128) * 256
-            #print(event.value, normalized)
-            actual_speed3 = max(0,  normalized/32768)
-            actual_speed4 = max(0, -normalized/32768) 
         if event.code == ecodes.ABS_Y:
             normalized = (event.value - 128) * 256
-            #print(event.value, normalized)
             actual_speed1 = max(0, -normalized/32768)
-            actual_speed2 = max(0,  normalized/32768)
-    #print(actual_speed1, actual_speed2, actual_speed3, actual_speed4)
+            actual_speed2 = max(0, normalized/32768)
+            actual_speed3 = max(0, normalized/32768)
+            actual_speed4 = max(0, -normalized/32768)
+        if event.code == ecodes.ABS_Z:
+            normalized = (event.value - 128) * 256
+            if normalized < 0:
+                if w == 1:
+                    actual_speed2 = max(0, -normalized/32768)
+                else:
+                    actual_speed2 = 0
+                actual_speed4 = max(0, -normalized/32768)
+                actual_speed1 = 0
+                actual_speed3 = 0
+            else:
+                actual_speed1 = max(0, normalized/32768)
+                if w == 1:
+                    actual_speed3 = max(0, normalized/32768)
+                else:
+                    actual_speed3 = 0
+                actual_speed2 = 0
+                actual_speed4 = 0
 
 if control_pwm_enabled:
     control_pwm_enabled = False
@@ -270,7 +255,7 @@ if control_pwm_enabled:
     control_pwm_thread2.join()
     control_pwm_thread3.join()
     control_pwm_thread4.join()
-    control_camera.join()
-    #control_line.join()
     control_sensor.join()
+    control_video.join()
+
 GPIO.cleanup()
