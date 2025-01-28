@@ -1,6 +1,6 @@
 from flask import Flask, Response
 import cv2
-<<<<<<< HEAD
+import os
 
 app = Flask(__name__)
 def __gstreamer_pipeline(
@@ -31,17 +31,9 @@ def __gstreamer_pipeline(
                     display_height,
             )
     )
+
 def generate_frames():
     camera = cv2.VideoCapture(__gstreamer_pipeline(camera_id=0, flip_method=2), cv2.CAP_GSTREAMER)
-=======
-import os
-
-
-app = Flask(__name__)
-
-def generate_frames():
-    camera = cv2.VideoCapture(0)
->>>>>>> 82e12e822ab67f5c998affb640c00d46e14ac5ad
 
     while True:
         success, frame = camera.read()
@@ -58,8 +50,4 @@ def video():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-<<<<<<< HEAD
-    app.run(host='0.0.0.0', port=4444)
-=======
     app.run(host='0.0.0.0', port=5000)
->>>>>>> 82e12e822ab67f5c998affb640c00d46e14ac5ad
